@@ -43,8 +43,6 @@
     let opaqueMesh;
     let vertexMesh;
 
-    let autoRotate = true;
-
     const gui = new lil.GUI();
     let obj = {
         seed: seed,
@@ -54,6 +52,7 @@
     };
 
     gui.add(obj, 'create new one').name('create a reef');
+    gui.add(obj, 'myBoolean').name('Auto rotate');
     gui.add(obj, 'export STL').name('export STL');
 
     function createNewOne() {
@@ -474,7 +473,7 @@
     function render() {
         requestAnimationFrame(render);
 
-        if (autoRotate) {
+        if (obj.myBoolean) {
             group.rotation.y += rotationSpeed;
         }
 
