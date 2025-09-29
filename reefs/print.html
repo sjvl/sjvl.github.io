@@ -50,13 +50,15 @@
         seed: seed,
         myBoolean: true,
         'export STL': exportToSTL,
+        'create new one': createNewOne,
     };
-    gui.add(obj, 'seed').listen().name('Seed').onFinishChange(function(value) {
-            seed = parseInt(value, 10); // Utilise le seed donné par l'utilisateur
-            regenerateGeometry(); // Régénère la géométrie avec le seed entré manuellement
-        });
-    gui.add(obj, 'export STL').name('Export STL');
 
+    gui.add(obj, 'create new one').name('create a reef');
+    gui.add(obj, 'export STL').name('export STL');
+
+    function createNewOne() {
+        location.reload();
+    }
     function exportToSTL() {
         const exporter = new THREE.STLExporter();
         const geometry = effect.generateGeometry();
@@ -166,7 +168,7 @@
                 clearInterval(intervalId);
                 // Attendre 3 secondes puis recharger la page
                 setTimeout(() => {
-                    location.reload();
+                    // location.reload();
                 }, 3000);
             }
         }, 50);
