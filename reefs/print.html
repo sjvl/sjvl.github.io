@@ -18,10 +18,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.124/build/three.min.js"></script>
 <script src="./MarchingCubes.js"></script>
-<!-- <script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/exporters/STLExporter.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/renderers/SVGRenderer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/renderers/Projector.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/utils/BufferGeometryUtils.js"></script> -->
+
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/exporters/STLExporter.js"></script>
 
 <script>
     let seed = Date.now();
@@ -45,6 +44,44 @@
     let vertexMesh;
 
     let autoRotate = true;
+
+    const gui = new lil.GUI();
+    let obj = {
+        seed: seed,
+        myBoolean: true,
+        'export STL': exportToSTL,
+    };
+    gui.add(obj, 'seed').listen().name('Seed').onFinishChange(function(value) {
+            seed = parseInt(value, 10); // Utilise le seed donné par l'utilisateur
+            regenerateGeometry(); // Régénère la géométrie avec le seed entré manuellement
+        });
+    gui.add(obj, 'export STL').name('Export STL');
+
+    function exportToSTL() {
+        const exporter = new THREE.STLExporter();
+        const geometry = effect.generateGeometry();
+        const mesh = new THREE.Mesh(geometry);
+        mesh.rotation.x = Math.PI / 2;
+        mesh.scale.set(100, 100, 100);
+        mesh.updateMatrix();
+        geometry.applyMatrix4(mesh.matrix);
+
+        const stlString = exporter.parse(mesh);
+        const blob = new Blob([stlString], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `reef-${seed}.stl`;
+        a.click();
+    }
+
+    function isMouseOverGui(event) {
+        // Si c'est un événement sur le GUI, ne pas bloquer les interactions
+        const elementUnderPointer = document.elementFromPoint(
+            event.touches ? event.touches[0].clientX : event.clientX,
+            event.touches ? event.touches[0].clientY : event.clientY
+        );
+        return elementUnderPointer?.closest('.lil-gui') !== null;
+    }    
 
     init();
     initializeGeometry();
