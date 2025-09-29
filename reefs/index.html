@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Reefs by sjvl</title>
+    <meta charset="utf-8">
+    <meta name="viewport">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.124/build/three.min.js"></script>
+<script src="./MarchingCubes.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/exporters/STLExporter.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/renderers/SVGRenderer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/renderers/Projector.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.124/examples/js/utils/BufferGeometryUtils.js"></script>
+
+<script>
+    let seed = Date.now();
+    let resolution = 75;
+    const gridSize = 25;
+    let subtract = .4;
+    let strength = 0.0025;
+    const radius = 2000;
+    const maxIterations = 60;
+    let allAlivePoints = [];
+    let intervalId, iterationCount = 0;
+    let light;
+
+    let container, camera, scene, renderer, effect, group;
+    let states = [];
+    let isMouseDown = false;
+    let previousMouseX = 0, previousMouseY = 0;
+    let rotationSpeed = 0.005;
+
+    let opaqueMesh;
+    let vertexMesh;
+
+    let autoRotate = true;
+
+    init();
+    initializeGeometry();
+    render();
+
+    function init() {
+        container = document.getElementById('container');
+
+        const aspect = window.innerWidth / window.innerHeight;
+        const frustumSize = 2000;
+
+        camera = new THREE.OrthographicCamera(
+            frustumSize * aspect / -2,  
+            frustumSize * aspect / 2,   
+            frustumSize / 2,            
+            frustumSize / -2,           
+            1,                          
+            10000                       
+        );
+        camera.position.set(0, 500, radius);
+        camera.lookAt(0, 0, 0);
+
+        scene = new THREE.Scene();
+        group = new THREE.Group();
+        scene.add(group);
+
+        const cameraGroup = new THREE.Group();
+        scene.add(cameraGroup);
+        cameraGroup.add(camera);
+
+        light = new THREE.DirectionalLight(0xE4E4E4, 1);
+        light.position.set(-0.4, 1, 0.5);
+        light.castShadow = true;
+        light.shadow.mapSize.width = 1024;
+        light.shadow.mapSize.height = 1024;
+        light.shadow.camera.near = 1;
+        light.shadow.camera.far = 2000;
+        light.shadow.camera.left = -500;
+        light.shadow.camera.right = 500;
+        light.shadow.camera.top = 500;
+        light.shadow.camera.bottom = -500;
+        cameraGroup.add(light);
+
+        const ambientLight = new THREE.AmbientLight(0x929292, .6);
+        group.add(ambientLight);  
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x00002F);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        document.body.appendChild(renderer.domElement);
+
+        document.addEventListener('mousedown', onPointerDown, { passive: false });
+        document.addEventListener('mouseup', onPointerUp, { passive: false });
+        document.addEventListener('mousemove', onPointerMove, { passive: false });
+        document.addEventListener('touchstart', onTouchStart, { passive: false });
+        document.addEventListener('touchend', onPointerUp, { passive: false });
+        document.addEventListener('touchmove', onTouchMove, { passive: false });
+        document.addEventListener('wheel', onMouseWheel, { passive: false });
+
+        window.addEventListener('resize', onWindowResize, false);
+    }
+
+    function initializeGeometry() {        
+        states = [];
+        allAlivePoints = [];
+        iterationCount = 0;
+        resolution = 75;
+        
+        initializeState();
+        
+        intervalId = setInterval(() => {
+            if (iterationCount < maxIterations) {
+                iterateGameOfLife();
+                createGeometry();
+            } else if (resolution < 150) {
+                resolution += 75;
+                createGeometry();
+            } else {
+                clearInterval(intervalId);
+                // Attendre 3 secondes puis recharger la page
+                setTimeout(() => {
+                    location.reload();
+                }, 3000);
+            }
+        }, 50);
+    }
+
+    const plasterMaterial = new THREE.MeshStandardMaterial({
+        color: 0xcccccc,
+        roughness: .5,
+        metalness: 0.1,
+        flatShading: true
+    });
+
+    const normalColorMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            ...THREE.UniformsLib['lights'],
+            normalMix: { value: 0.5 },
+            redTint: { value: new THREE.Color(1.5, 0.8, 1) }
+        },
+        vertexShader: `
+            #include <common>
+            #include <lights_pars_begin>
+            
+            varying vec3 vNormal;
+            varying vec3 vViewPosition;
+            
+            void main() {
+                vNormal = normalize(normalMatrix * normal);
+                
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                vViewPosition = -mvPosition.xyz;
+                
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            #include <common>
+            #include <lights_pars_begin>
+            
+            uniform float normalMix;
+            uniform vec3 redTint;
+            
+            varying vec3 vNormal;
+            varying vec3 vViewPosition;
+            
+            void main() {
+                vec3 baseColor = (vNormal * 0.5 + 0.5) * redTint;
+                
+                vec3 normal = normalize(vNormal);
+                vec3 viewDir = normalize(vViewPosition);
+                
+                vec3 totalLight = vec3(0.0);
+                vec3 totalSpecular = vec3(0.0);
+                
+                #if NUM_DIR_LIGHTS > 0
+                for(int i = 0; i < NUM_DIR_LIGHTS; i++) {
+                    vec3 lightDir = directionalLights[i].direction;
+                    vec3 lightColor = directionalLights[i].color;
+                    
+                    float diff = max(dot(normal, lightDir), 0.0);
+                    totalLight += lightColor * diff;
+                    
+                    vec3 halfDir = normalize(lightDir + viewDir);
+                    float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
+                    totalSpecular += lightColor * spec * 0.5;
+                }
+                #endif
+                
+                vec3 ambient = vec3(0.2);
+                
+                vec3 finalColor = baseColor * (ambient + totalLight) + totalSpecular;
+                
+                gl_FragColor = vec4(finalColor, 1.0);
+            }
+        `,
+        lights: true,
+        flatShading: true
+    });
+
+    function createGeometry() {
+        if (effect) effect.reset();
+ 
+        effect = new THREE.MarchingCubes(resolution, plasterMaterial);
+        effect.position.set(0, 0, 0);
+        effect.scale.set(700, 700, 700);
+
+        for (const points of allAlivePoints) {
+            for (const point of points) {
+                effect.addBall(point.x, point.y, point.z, strength, subtract);
+            }
+        }
+
+        effect.addSocleY(1, 12);
+        effect.addBottomCut(.075);
+
+        let newGeometry = effect.generateGeometry();
+
+        if (opaqueMesh) {
+            group.remove(opaqueMesh);
+            opaqueMesh.geometry.dispose();
+        }
+
+        opaqueMesh = new THREE.Mesh(newGeometry, normalColorMaterial);
+        opaqueMesh.castShadow = true;
+        opaqueMesh.receiveShadow = true;
+        
+        opaqueMesh.scale.set(700, 700, 700);
+        group.add(opaqueMesh);
+    }
+
+    function initializeState() {
+        let seedIncrement = 0;
+        const initialState = [];
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isAlive = seededRandom(seed + seedIncrement) < .15 ? 1 : 0;
+                initialState.push(isAlive);
+                seedIncrement++;
+            }
+        }
+        states.push(initialState);
+    }
+
+    function seededRandom(seed) {
+        const x = Math.sin(seed) * 10000;
+        return x - Math.floor(x);
+    }
+
+    function iterateGameOfLife() {
+        computeNextState();
+        iterationCount++;
+        generatePointsFromGameOfLife();
+    }
+
+    function computeNextState() {
+        const previousState = states[states.length - 1];
+        const nextState = [];
+
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isAlive = previousState[x * gridSize + z];
+                const aliveNeighbors = countAliveNeighbors(previousState, x, z);
+
+                if (isAlive && (aliveNeighbors === 2 || aliveNeighbors === 3)) {
+                    nextState.push(1);
+                } else if (!isAlive && aliveNeighbors === 3) {
+                    nextState.push(1);
+                } else {
+                    nextState.push(0);
+                }
+            }
+        }
+        states.push(nextState);
+    }
+
+    function countAliveNeighbors(state, x, z) {
+        const neighbors = [
+            [-1, -1], [-1, 0], [-1, 1],
+            [0, -1],         [0, 1],
+            [1, -1], [1, 0], [1, 1]
+        ];
+        let count = 0;
+        neighbors.forEach(([dx, dz]) => {
+            const nx = x + dx;
+            const nz = z + dz;
+            if (nx >= 0 && nz >= 0 && nx < gridSize && nz < gridSize) {
+                count += state[nx * gridSize + nz];
+            }
+        });
+        return count;
+    }
+
+    function generatePointsFromGameOfLife() {
+        const finalState = states[states.length - 1];
+        const newAlivePoints = [];
+
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isAlive = finalState[x * gridSize + z];
+                if (isAlive === 1) {
+                    const ballx = (x / (gridSize - 1)) * (0.67 - 0.27) + 0.27;
+                    const bally = mapIterationToY(iterationCount);
+                    const ballz = (z / (gridSize - 1)) * (0.67 - 0.27) + 0.27;
+                    newAlivePoints.push({ x: ballx, y: bally, z: ballz });
+                }
+            }
+        }
+
+        allAlivePoints.push(newAlivePoints);
+    }
+
+    function mapIterationToY(iteration) {
+        const minY = 0.1;
+        const maxY = 0.9;
+        return minY + ((maxY - minY) / maxIterations) * iteration;
+    }
+
+    function onPointerDown(event) {
+        event.preventDefault();
+        isMouseDown = true;
+        previousMouseX = event.touches ? event.touches[0].clientX : event.clientX;
+        previousMouseY = event.touches ? event.touches[0].clientY : event.clientY;
+    }
+
+    function onPointerUp(event) {
+        event.preventDefault();
+        isMouseDown = false;
+    }
+
+    function onPointerMove(event) {
+        event.preventDefault();
+        
+        if (!isMouseDown) return;
+        
+        const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+        const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+        
+        if (!isFinite(clientX) || !isFinite(clientY)) return;
+        
+        const deltaX = clientX - previousMouseX;
+        const deltaY = clientY - previousMouseY;
+
+        group.rotation.y += deltaX * rotationSpeed;
+        group.rotation.x += deltaY * rotationSpeed;
+
+        previousMouseX = clientX;
+        previousMouseY = clientY;
+    }
+
+    function onMouseWheel(event) {
+        event.preventDefault();
+
+        const zoomFactor = 1.1;
+
+        if (event.deltaY < 0) {
+            camera.zoom *= zoomFactor;
+        } else {
+            camera.zoom /= zoomFactor;
+        }
+
+        camera.updateProjectionMatrix();
+    }
+
+    let touchStartDistance = 0;
+    function onTouchStart(event) {
+        event.preventDefault();
+
+        if (event.touches.length === 1) {
+            isMouseDown = true;
+            previousMouseX = event.touches[0].clientX;
+            previousMouseY = event.touches[0].clientY;
+        } else if (event.touches.length === 2) {
+            const dx = event.touches[0].clientX - event.touches[1].clientX;
+            const dy = event.touches[0].clientY - event.touches[1].clientY;
+            touchStartDistance = Math.sqrt(dx * dx + dy * dy);
+        }
+    }
+
+    function onTouchMove(event) {
+        event.preventDefault();
+        
+        if (event.touches.length === 1 && isMouseDown) {
+            const clientX = event.touches[0].clientX;
+            const clientY = event.touches[0].clientY;
+            const deltaX = clientX - previousMouseX;
+            const deltaY = clientY - previousMouseY;
+
+            group.rotation.y += deltaX * rotationSpeed;
+            group.rotation.x += deltaY * rotationSpeed;
+
+            previousMouseX = clientX;
+            previousMouseY = clientY;
+        } else if (event.touches.length === 2) {
+            const dx = event.touches[0].clientX - event.touches[1].clientX;
+            const dy = event.touches[0].clientY - event.touches[1].clientY;
+            const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+            if (touchStartDistance > 0) {
+                const zoomFactor = currentDistance / touchStartDistance;
+                camera.zoom *= zoomFactor;
+                camera.updateProjectionMatrix();
+            }
+
+            touchStartDistance = currentDistance;
+        }
+    }    
+
+    function onWindowResize() {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        renderer.setSize(width, height);
+
+        const aspect = width / height;
+        const zoomFactor = 1000;
+        camera.left = -zoomFactor * aspect;
+        camera.right = zoomFactor * aspect;
+        camera.top = zoomFactor;
+        camera.bottom = -zoomFactor;
+
+        camera.updateProjectionMatrix();
+    }
+
+    function render() {
+        requestAnimationFrame(render);
+
+        if (autoRotate) {
+            group.rotation.y += rotationSpeed;
+        }
+
+        renderer.render(scene, camera);
+    }
+
+</script>
+
+</body>
+</html>
