@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Reefs by sjvl</title>
+    <meta charset="utf-8">
+    <meta name="viewport">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+
+        #container {
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #three-canvas {
+            width: 100%;
+            height: auto;
+            max-height: 100vh;
+            object-fit: contain;
+            display: block;
+            margin: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container"></div>
+
+<script src="./js/three.124.min.js"></script>
+<script src="./js/MarchingCubes.js"></script>
+
+<!-- <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script> -->
+<script src="./js/lil-gui.js"></script>
+
+<script src="./js/STLExporter.js"></script>
+<script src="./js/SVGExporter.js"></script>
+
+
+<script>
+    let seed = Date.now();
+    let resolution = 75;
+    const gridSize = 25;
+    let subtract = .4;
+    let strength = 0.0025;
+    const radius = 2000;
+    const maxIterations = 60;
+    let allAlivePoints = [];
+    let intervalId, iterationCount = 0;
+    let light;
+
+    let container, camera, scene, renderer, effect, group;
+    let states = [];
+    let isMouseDown = false;
+    let previousMouseX = 0, previousMouseY = 0;
+    let rotationSpeed = 0.005;
+
+    let opaqueMesh;
+    let vertexMesh;
+
+    let penSize = .4;
+    let paper = {paperWidth: 297, paperHeight: 420};
+    let penColor = 0x000000;
+    let paperColor = 0xeae4dd;
+    let normalModeBgColor = 0x00002F;
+    if(penColor === 0xffffff) paperColor = 0x000000;
+    
+    const directionalLight = new THREE.DirectionalLight(0xbbbbbb);
+    directionalLight.position.set(-1., 1., 0.3);
+    const ambientLight = new THREE.AmbientLight(0x080808);
+    
+    const normalModeDirectionalLight = new THREE.DirectionalLight(0xE4E4E4, 1);
+    normalModeDirectionalLight.position.set(-0.4, 1, 0.5);
+    const normalModeAmbientLight = new THREE.AmbientLight(0x929292, .6);
+    
+    let rotation = true;
+    let useDrawingMaterial = true;
+
+    function isMobile() {
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+            || window.innerWidth <= 768;
+    }
+
+    let gui;
+    if (isMobile()) {
+        gui = new lil.GUI();
+        let obj = {
+            seed: seed,
+            rotation: rotation,
+            'export STL': exportToSTL,
+            'change mode': changeMode,
+            'export SVG': exportToSVG,
+            'create new one': createNewOne,
+        };
+
+        gui.add(obj, 'create new one').name('create a reef');
+        gui.add(obj, 'rotation').name('Auto rotate').onChange((value) => {
+            rotation = value;
+        });   
+        gui.add(obj, 'change mode').name('change mode'); 
+        gui.add(obj, 'export STL').name('export STL');
+        gui.add(obj, 'export SVG').name('export SVG');
+    }
+
+    function createNewOne() {
+        location.reload();
+    }
+    
+    function exportToSTL() {
+        const exporter = new THREE.STLExporter();
+        const geometry = effect.generateGeometry();
+        const mesh = new THREE.Mesh(geometry);
+        mesh.rotation.x = Math.PI / 2;
+        mesh.updateMatrix();
+        geometry.applyMatrix4(mesh.matrix);
+
+        const stlString = exporter.parse(mesh);
+        const blob = new Blob([stlString], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `reef-${seed}.stl`;
+        a.click();
+    }
+    
+    function exportToSVG() {
+        // Sauvegarder l'état actuel
+        const previousMaterialState = useDrawingMaterial;
+        
+        // Basculer temporairement en mode dessin si nécessaire
+        if (!useDrawingMaterial) {
+            useDrawingMaterial = true;
+            updateLightsAndBackground();
+            createGeometry();
+        }
+        
+        requestAnimationFrame(() => {
+            try {
+                captureScreenToSVGOptimized(renderer, {
+                    threshold: 0.5,
+                    filename: `reef-${seed}.svg`
+                });
+                
+                // Restaurer l'état précédent après un court délai
+                setTimeout(() => {
+                    if (!previousMaterialState) {
+                        useDrawingMaterial = false;
+                        updateLightsAndBackground();
+                        createGeometry();
+                    }
+                }, 100);
+            } catch (error) {
+                console.error("Erreur lors de la génération du SVG:", error);
+                alert("Une erreur s'est produite lors de la génération du SVG.");
+                
+                // Restaurer l'état même en cas d'erreur
+                if (!previousMaterialState) {
+                    useDrawingMaterial = false;
+                    updateLightsAndBackground();
+                    createGeometry();
+                }
+            }
+        });
+    }
+
+    init();
+    initializeGeometry();
+    render();
+
+    function init() {
+        container = document.getElementById('container');
+
+        scene = new THREE.Scene();
+        group = new THREE.Group();
+        scene.add(group);
+
+        const aspect = paper.paperWidth / paper.paperHeight;
+        const fov = 5;
+        const near = .1;
+        const far = 35;
+
+        camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+        camera.position.set(0, 3, 30);
+        camera.lookAt(0, 0, 0);
+        scene.add(camera);
+
+        const cameraGroup = new THREE.Group();
+        scene.add(cameraGroup);
+        cameraGroup.add(camera);
+
+        scene.add(ambientLight);  
+        scene.add(directionalLight);
+        scene.add(normalModeAmbientLight);
+        scene.add(normalModeDirectionalLight);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.domElement.id = 'three-canvas';
+        const renderWidth = Math.round(paper.paperWidth / penSize);
+        const renderHeight = Math.round(paper.paperHeight / penSize);
+        renderer.setSize(renderWidth, renderHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        container.appendChild(renderer.domElement);
+
+        document.addEventListener('mousedown', onPointerDown, { passive: false });
+        document.addEventListener('mouseup', onPointerUp, { passive: false });
+        document.addEventListener('mousemove', onPointerMove, { passive: false });
+        document.addEventListener('touchstart', onTouchStart, { passive: false });
+        document.addEventListener('touchend', onPointerUp, { passive: false });
+        document.addEventListener('touchmove', onTouchMove, { passive: false });
+        document.addEventListener('wheel', onMouseWheel, { passive: false });
+
+        window.addEventListener('resize', onWindowResize, false);
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === ' ') {
+                location.reload();
+            }
+            if (event.key === 'r') {
+                rotation = !rotation;
+            }
+            if (event.key === 'p' || event.key === 'P') {
+                exportToSTL();
+            }
+            if (event.key === 'd' || event.key === 'D') {
+                exportToSVG();
+            }
+            if (event.key === 's' || event.key === 'S') {
+                exportToSTL();
+                exportToSVG();
+            }
+            if (event.key === 'm' || event.key === 'M') {
+                changeMode();
+            }
+        });
+        
+        updateLightsAndBackground();
+    }
+
+    function changeMode(){
+        useDrawingMaterial = !useDrawingMaterial;
+        updateLightsAndBackground();
+        createGeometry();
+    }
+
+    function updateLightsAndBackground() {
+        if (useDrawingMaterial) {
+            // Mode dessin : lumières douces et fond papier
+            directionalLight.visible = true;
+            ambientLight.visible = true;
+            normalModeDirectionalLight.visible = false;
+            normalModeAmbientLight.visible = false;
+        } else {
+            // Mode normal : lumières intenses et fond bleu foncé
+            directionalLight.visible = false;
+            ambientLight.visible = false;
+            normalModeDirectionalLight.visible = true;
+            normalModeAmbientLight.visible = true;
+        }
+    }
+
+    function DrawingMaterial(directionalLight, ambientLight) {
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                uDirLightPos: { value: directionalLight.position.clone() },
+                uDirLightColor: { value: new THREE.Color(0xffffff) },
+                uAmbientLightColor: { value: new THREE.Color(0x000000) },
+                uBaseColor: { value: new THREE.Color(paperColor) },
+                uInkColor: { value: new THREE.Color(penColor) },
+                uScale: { value: 2.5 },
+                uAngleStep: { value: 4.0 },
+                uAngle: { value: 1.1 },
+                uThickness: { value: .58 },
+                uRange: { value: new THREE.Vector2(0.4, 0.6) },
+                uRim: { value: 0.25 },
+                uNoiseScale: { value: 2.0 },
+                uNoiseAmplitude: { value: .3 },
+                uLinesNoiseScale: { value: 2.0 },
+                uLinesNoiseAmplitude: { value: .5 }
+            },
+            
+            vertexShader: `
+                varying vec3 vNormal;
+                varying vec2 vCoords;
+                varying vec3 vCameraNormal;
+                varying vec4 vWorldPosition;
+                
+                void main() {
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    vNormal = normalize(normalMatrix * normal);
+                    vCoords = uv;
+                    vCameraNormal = normalMatrix * normal;
+                    vWorldPosition = modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            
+            fragmentShader: `
+                uniform vec3 uBaseColor;
+                uniform vec3 uInkColor;
+                uniform vec3 uDirLightPos;
+                uniform vec3 uDirLightColor;
+                uniform vec3 uAmbientLightColor;
+                uniform float uScale;
+                uniform float uAngleStep;
+                uniform float uAngle;
+                uniform float uThickness;
+                uniform vec2 uRange;
+                uniform float uRim;
+                uniform float uNoiseScale;
+                uniform float uNoiseAmplitude;
+                uniform float uLinesNoiseScale;
+                uniform float uLinesNoiseAmplitude;
+                
+                varying vec3 vNormal;
+                varying vec2 vCoords;
+                varying vec3 vCameraNormal;
+                varying vec4 vWorldPosition;
+                
+                #define PI 3.141592653589793
+                
+                vec2 hash(vec2 p) {
+                    p = vec2(dot(p,vec2(127.1,311.7)),
+                        dot(p,vec2(269.5,183.3)));
+                    return -1.0 + 2.0*fract(sin(p)*43758.5453123);
+                }
+                
+                float noise(in vec2 p) {
+                    const float K1 = 0.366025404;
+                    const float K2 = 0.211324865;
+                    
+                    vec2 i = floor(p + (p.x+p.y)*K1);
+                    
+                    vec2 a = p - i + (i.x+i.y)*K2;
+                    vec2 o = (a.x>a.y) ? vec2(1.0,0.0) : vec2(0.0,1.0);
+                    vec2 b = a - o + K2;
+                    vec2 c = a - 1.0 + 2.0*K2;
+                    
+                    vec3 h = max(0.5-vec3(dot(a,a), dot(b,b), dot(c,c)), 0.0);
+                    
+                    vec3 n = h*h*h*h*vec3(dot(a,hash(i+0.0)), dot(b,hash(i+o)), dot(c,hash(i+1.0)));
+                    
+                    return dot(n, vec3(70.0));
+                }
+                
+                float lines(in float l, in vec2 fragCoord, in vec2 resolution, in float thickness, in float e) {
+                    vec2 uv = fragCoord.xy * resolution;
+                    float c = (.5 + .5 * sin(uv.x*.5));
+                    float f = (c+thickness)*l;
+                    f = smoothstep(.5-e, .5+e, f);
+                    return f;
+                }
+                
+                float blendDarken(float base, float blend) {
+                    return min(blend, base);
+                }
+                
+                vec3 blendDarken(vec3 base, vec3 blend) {
+                    return vec3(blendDarken(base.r,blend.r), blendDarken(base.g,blend.g), blendDarken(base.b,blend.b));
+                }
+                
+                vec3 blendDarken(vec3 base, vec3 blend, float opacity) {
+                    return (blendDarken(base, blend) * opacity + base * (1.0 - opacity));
+                }
+                
+                void main() {
+                    float d = max(dot(vNormal, uDirLightPos), 0.0);
+                    float directionalLightWeighting = d * 1.1 * 1.1 * 1.1;
+                    vec3 lightWeighting = uAmbientLightColor + uDirLightColor * directionalLightWeighting;
+                    float lw = length(lightWeighting);
+                    
+                    float l = lw;
+                    l = uRange.x + l * (uRange.y - uRange.x);
+                    
+                    vec3 n = normalize(vCameraNormal);
+                    float a = atan(n.y, n.x);
+                    a = round(a * uAngleStep) / uAngleStep;
+                    
+                    float r = max(0.0, abs(dot(normalize(vNormal), normalize(-vWorldPosition.xyz))));
+                    float de = 0.001 * length(vec2(dFdx(gl_FragCoord.x), dFdy(gl_FragCoord.y)));
+                    float e = 0.1 * de;
+                    
+                    vec2 coords = uScale * 100.0 * (vWorldPosition.xy / (de * 500.0)) + 
+                                uLinesNoiseAmplitude * noise(uLinesNoiseScale * vWorldPosition.xy);
+                    
+                    float border = pow(smoothstep(0.0, 0.25, r), uRim);
+                    l *= border;
+                    
+                    r = smoothstep(0.8, 0.8 + e, r);
+                    a *= 1.0 - r;
+                    
+                    a += PI / 2.0;
+                    a += uAngle;
+                    
+                    float s = sin(a);
+                    float c = cos(a);
+                    mat2 rot = mat2(c, -s, s, c);
+                    coords = rot * coords;
+                    
+                    float line = lines(l, coords, vec2(5.0), 
+                                    uThickness + uNoiseAmplitude * noise(uNoiseScale * coords.xy), e);
+                    
+                    gl_FragColor = vec4(blendDarken(uBaseColor, uInkColor, 1.0 - line), 1.0);
+                }
+            `
+        });
+
+        return material;
+    }
+
+    function NormalColorMaterial() {
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                ...THREE.UniformsLib['lights'],
+                normalMix: { value: 0.5 },
+                redTint: { value: new THREE.Color(1.5, 0.8, 1) }
+            },
+            vertexShader: `
+                #include <common>
+                #include <lights_pars_begin>
+                
+                varying vec3 vNormal;
+                varying vec3 vViewPosition;
+                
+                void main() {
+                    vNormal = normalize(normalMatrix * normal);
+                    
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    vViewPosition = -mvPosition.xyz;
+                    
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                #include <common>
+                #include <lights_pars_begin>
+                
+                uniform float normalMix;
+                uniform vec3 redTint;
+                
+                varying vec3 vNormal;
+                varying vec3 vViewPosition;
+                
+                void main() {
+                    vec3 baseColor = (vNormal * 0.5 + 0.5) * redTint;
+                    
+                    vec3 normal = normalize(vNormal);
+                    vec3 viewDir = normalize(vViewPosition);
+                    
+                    vec3 totalLight = vec3(0.0);
+                    vec3 totalSpecular = vec3(0.0);
+                    
+                    #if NUM_DIR_LIGHTS > 0
+                    for(int i = 0; i < NUM_DIR_LIGHTS; i++) {
+                        vec3 lightDir = directionalLights[i].direction;
+                        vec3 lightColor = directionalLights[i].color;
+                        
+                        float diff = max(dot(normal, lightDir), 0.0);
+                        totalLight += lightColor * diff;
+                        
+                        vec3 halfDir = normalize(lightDir + viewDir);
+                        float spec = pow(max(dot(normal, halfDir), 0.0), 32.0);
+                        totalSpecular += lightColor * spec * 0.5;
+                    }
+                    #endif
+                    
+                    vec3 ambient = vec3(0.2);
+                    
+                    vec3 finalColor = baseColor * (ambient + totalLight) + totalSpecular;
+                    
+                    gl_FragColor = vec4(finalColor, 1.0);
+                }
+            `,
+            lights: true,
+            flatShading: true
+        });
+
+        return material;
+    }
+
+    function initializeGeometry() {        
+        states = [];
+        allAlivePoints = [];
+        iterationCount = 0;
+        resolution = 75;
+        
+        initializeState();
+        
+        intervalId = setInterval(() => {
+            if (iterationCount < maxIterations) {
+                iterateGameOfLife();
+                createGeometry();
+            } else if (resolution < 150) {
+                resolution += 75;
+                createGeometry();
+            } else {
+                clearInterval(intervalId);
+            }
+        }, 50);
+    }
+
+    let drawingMaterial = DrawingMaterial(directionalLight, ambientLight);
+    let normalMaterial = NormalColorMaterial();
+
+    function createGeometry() {
+        if (effect) effect.reset();
+ 
+        const currentMaterial = useDrawingMaterial ? drawingMaterial : normalMaterial;
+        
+        effect = new THREE.MarchingCubes(resolution, currentMaterial);
+        effect.position.set(0, 0, 0);
+
+        for (const points of allAlivePoints) {
+            for (const point of points) {
+                effect.addBall(point.x, point.y, point.z, strength, subtract);
+            }
+        }
+
+        effect.addSocleY(1, 12);
+        effect.addBottomCut(.075);
+
+        let newGeometry = effect.generateGeometry();
+
+        if (opaqueMesh) {
+            group.remove(opaqueMesh);
+            opaqueMesh.geometry.dispose();
+        }
+
+        opaqueMesh = new THREE.Mesh(newGeometry, currentMaterial);
+        opaqueMesh.castShadow = true;
+        opaqueMesh.receiveShadow = true;
+        
+        group.add(opaqueMesh);
+    }
+
+    function initializeState() {
+        let seedIncrement = 0;
+        const initialState = [];
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isAlive = seededRandom(seed + seedIncrement) < .15 ? 1 : 0;
+                initialState.push(isAlive);
+                seedIncrement++;
+            }
+        }
+        states.push(initialState);
+    }
+
+    function seededRandom(seed) {
+        const x = Math.sin(seed) * 10000;
+        return x - Math.floor(x);
+    }
+
+    function iterateGameOfLife() {
+        computeNextState();
+        iterationCount++;
+        generatePointsFromGameOfLife();
+    }
+
+    function computeNextState() {
+        const previousState = states[states.length - 1];
+        const nextState = [];
+
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isAlive = previousState[x * gridSize + z];
+                const aliveNeighbors = countAliveNeighbors(previousState, x, z);
+
+                if (isAlive && (aliveNeighbors === 2 || aliveNeighbors === 3)) {
+                    nextState.push(1);
+                } else if (!isAlive && aliveNeighbors === 3) {
+                    nextState.push(1);
+                } else {
+                    nextState.push(0);
+                }
+            }
+        }
+        states.push(nextState);
+    }
+
+    function countAliveNeighbors(state, x, z) {
+        const neighbors = [
+            [-1, -1], [-1, 0], [-1, 1],
+            [0, -1],         [0, 1],
+            [1, -1], [1, 0], [1, 1]
+        ];
+        let count = 0;
+        neighbors.forEach(([dx, dz]) => {
+            const nx = x + dx;
+            const nz = z + dz;
+            if (nx >= 0 && nz >= 0 && nx < gridSize && nz < gridSize) {
+                count += state[nx * gridSize + nz];
+            }
+        });
+        return count;
+    }
+
+    function generatePointsFromGameOfLife() {
+        const finalState = states[states.length - 1];
+        const newAlivePoints = [];
+
+        for (let x = 0; x < gridSize; x++) {
+            for (let z = 0; z < gridSize; z++) {
+                const isAlive = finalState[x * gridSize + z];
+                if (isAlive === 1) {
+                    const ballx = (x / (gridSize - 1)) * (0.67 - 0.27) + 0.27;
+                    const bally = mapIterationToY(iterationCount);
+                    const ballz = (z / (gridSize - 1)) * (0.67 - 0.27) + 0.27;
+                    newAlivePoints.push({ x: ballx, y: bally, z: ballz });
+                }
+            }
+        }
+
+        allAlivePoints.push(newAlivePoints);
+    }
+
+    function mapIterationToY(iteration) {
+        const minY = 0.1;
+        const maxY = 0.9;
+        return minY + ((maxY - minY) / maxIterations) * iteration;
+    }
+
+    function onPointerDown(event) {
+        event.preventDefault();
+        isMouseDown = true;
+        previousMouseX = event.touches ? event.touches[0].clientX : event.clientX;
+        previousMouseY = event.touches ? event.touches[0].clientY : event.clientY;
+    }
+
+    function onPointerUp(event) {
+        event.preventDefault();
+        isMouseDown = false;
+    }
+
+    function onPointerMove(event) {
+        event.preventDefault();
+        
+        if (!isMouseDown) return;
+        
+        const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+        const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+        
+        if (!isFinite(clientX) || !isFinite(clientY)) return;
+        
+        const deltaX = clientX - previousMouseX;
+        const deltaY = clientY - previousMouseY;
+
+        group.rotation.y += deltaX * rotationSpeed;
+        group.rotation.x += deltaY * rotationSpeed;
+
+        previousMouseX = clientX;
+        previousMouseY = clientY;
+    }
+
+    function onMouseWheel(event) {
+        event.preventDefault();
+
+        const zoomFactor = 1.1;
+
+        if (event.deltaY < 0) {
+            camera.zoom *= zoomFactor;
+        } else {
+            camera.zoom /= zoomFactor;
+        }
+
+        camera.updateProjectionMatrix();
+    }
+
+    let touchStartDistance = 0;
+    function onTouchStart(event) {
+        event.preventDefault();
+
+        if (event.touches.length === 1) {
+            isMouseDown = true;
+            previousMouseX = event.touches[0].clientX;
+            previousMouseY = event.touches[0].clientY;
+        } else if (event.touches.length === 2) {
+            const dx = event.touches[0].clientX - event.touches[1].clientX;
+            const dy = event.touches[0].clientY - event.touches[1].clientY;
+            touchStartDistance = Math.sqrt(dx * dx + dy * dy);
+        }
+    }
+
+    function onTouchMove(event) {
+        event.preventDefault();
+        
+        if (event.touches.length === 1 && isMouseDown) {
+            const clientX = event.touches[0].clientX;
+            const clientY = event.touches[0].clientY;
+            const deltaX = clientX - previousMouseX;
+            const deltaY = clientY - previousMouseY;
+
+            group.rotation.y += deltaX * rotationSpeed;
+            group.rotation.x += deltaY * rotationSpeed;
+
+            previousMouseX = clientX;
+            previousMouseY = clientY;
+        } else if (event.touches.length === 2) {
+            const dx = event.touches[0].clientX - event.touches[1].clientX;
+            const dy = event.touches[0].clientY - event.touches[1].clientY;
+            const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+            if (touchStartDistance > 0) {
+                const zoomFactor = currentDistance / touchStartDistance;
+                camera.zoom *= zoomFactor;
+                camera.updateProjectionMatrix();
+            }
+
+            touchStartDistance = currentDistance;
+        }
+    }    
+
+    function onWindowResize() {
+        const container = document.getElementById('container');
+
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+        
+        const paperRatio = paper.paperWidth / paper.paperHeight;
+        let newWidth, newHeight;
+        
+        if (containerWidth / containerHeight > paperRatio) {
+            newHeight = containerHeight;
+            newWidth = containerHeight * paperRatio;
+        } else {
+            newWidth = containerWidth;
+            newHeight = containerWidth / paperRatio;
+        }
+        
+        const pixelsPerMM = 1 / penSize;
+        const renderWidth = Math.round(paper.paperWidth * pixelsPerMM);
+        const renderHeight = Math.round(paper.paperHeight * pixelsPerMM);
+        
+        renderer.setSize(renderWidth, renderHeight);
+        
+        camera.aspect = paperRatio;
+        camera.updateProjectionMatrix();
+        
+        renderer.domElement.style.width = newWidth + 'px';
+        renderer.domElement.style.height = newHeight + 'px';
+
+        if (gui) {
+            if (isMobile()) {
+                gui.show();
+            } else {
+                gui.hide();
+            }
+        }
+    }
+
+    function render() {
+        requestAnimationFrame(render);
+
+        if (rotation) {
+            group.rotation.y += rotationSpeed;
+        }
+
+        // Mettre à jour la couleur de fond à chaque frame
+        if (useDrawingMaterial) {
+            renderer.setClearColor(paperColor);
+        } else {
+            renderer.setClearColor(normalModeBgColor);
+        }
+
+        renderer.render(scene, camera);
+    }
+
+</script>
+
+</body>
+</html>
