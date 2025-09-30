@@ -265,7 +265,7 @@
             normalModeAmbientLight.visible = true;
         }
     }
-
+    
     function DrawingMaterial(directionalLight, ambientLight) {
         let material
         if (seed % 2 === 0){
@@ -496,8 +496,8 @@
         }
         return material;
     }
-
     
+
     function NormalColorMaterial() {
         const material = new THREE.ShaderMaterial({
             uniforms: {
