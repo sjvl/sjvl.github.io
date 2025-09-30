@@ -209,13 +209,13 @@
 
         container.appendChild(renderer.domElement);
 
-        document.addEventListener('mousedown', onPointerDown, { passive: false });
-        document.addEventListener('mouseup', onPointerUp, { passive: false });
-        document.addEventListener('mousemove', onPointerMove, { passive: false });
-        document.addEventListener('touchstart', onTouchStart, { passive: false });
-        document.addEventListener('touchend', onPointerUp, { passive: false });
-        document.addEventListener('touchmove', onTouchMove, { passive: false });
-        document.addEventListener('wheel', onMouseWheel, { passive: false });
+        container.addEventListener('mousedown', onPointerDown, { passive: false });
+        container.addEventListener('mouseup', onPointerUp, { passive: false });
+        container.addEventListener('mousemove', onPointerMove, { passive: false });
+        container.addEventListener('touchstart', onTouchStart, { passive: false });
+        container.addEventListener('touchend', onPointerUp, { passive: false });
+        container.addEventListener('touchmove', onTouchMove, { passive: false });
+        container.addEventListener('wheel', onMouseWheel, { passive: false });
 
         window.addEventListener('resize', onWindowResize, false);
 
